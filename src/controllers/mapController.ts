@@ -1,11 +1,8 @@
 import { Response, NextFunction } from "express";
 import { AuthRequest, Coordinates } from "../types";
-import {
-  geocodeAddress,
-  reverseGeocode,
-  getRoute,
-} from "../services/mapService";
+import { geocodeAddress, reverseGeocode, getRoute } from "../services/mapService";
 import { calculateFare } from "../services/pricingService";
+import { sendSuccess } from "../utils/apiResponse";
 
 export const geocode = async (
   req: AuthRequest,
@@ -15,7 +12,7 @@ export const geocode = async (
   try {
     const { address } = req.body as { address: string };
     const result = await geocodeAddress(address);
-    res.json({ success: true, data: result });
+    sendSuccess(res, result);
   } catch (err) {
     next(err);
   }
@@ -29,7 +26,7 @@ export const reverseGeocodeHandler = async (
   try {
     const coords = req.body as Coordinates;
     const address = await reverseGeocode(coords);
-    res.json({ success: true, data: { address } });
+    sendSuccess(res, { address });
   } catch (err) {
     next(err);
   }
@@ -47,16 +44,16 @@ export const route = async (
     };
 
     const osrmResult = await getRoute(origin, destination);
-    const fare = calculateFare(osrmResult.distance_km, osrmResult.duration_min);
+    const fare = await calculateFare(
+      osrmResult.distance_km,
+      osrmResult.duration_min,
+    );
 
-    res.json({
-      success: true,
-      data: {
-        points: osrmResult.points,
-        distance_km: osrmResult.distance_km,
-        duration_min: osrmResult.duration_min,
-        fare,
-      },
+    sendSuccess(res, {
+      points: osrmResult.points,
+      distance_km: osrmResult.distance_km,
+      duration_min: osrmResult.duration_min,
+      fare,
     });
   } catch (err) {
     next(err);

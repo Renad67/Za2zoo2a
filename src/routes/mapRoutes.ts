@@ -4,11 +4,11 @@ import {
   reverseGeocodeHandler,
   route,
 } from "../controllers/mapController";
-import { authenticate } from "../middleware/auth";
+import { protect } from "../middleware/auth";
 
 const router = Router();
 
-router.use(authenticate);
+router.use(protect);
 
 router.post("/geocode", geocode);
 router.post("/reverse-geocode", reverseGeocodeHandler);

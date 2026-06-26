@@ -1,7 +1,5 @@
 import mongoose from "mongoose";
-
-const MONGODB_URI =
-  process.env.MONGODB_URI ?? "mongodb://localhost:27017/voltride";
+import { env } from "./env";
 
 const connectDB = async (): Promise<void> => {
   const MAX_RETRIES = 5;
@@ -9,12 +7,12 @@ const connectDB = async (): Promise<void> => {
 
   while (attempt < MAX_RETRIES) {
     try {
-      await mongoose.connect(MONGODB_URI, {
+      await mongoose.connect(env.MONGODB_URI, {
         serverSelectionTimeoutMS: 5000,
         socketTimeoutMS: 45000,
       });
 
-      console.log(` MongoDB connected → ${mongoose.connection.host}`);
+      console.log(`✅  MongoDB connected → ${mongoose.connection.host}`);
 
       process.on("SIGINT", async () => {
         await mongoose.connection.close();
@@ -26,12 +24,12 @@ const connectDB = async (): Promise<void> => {
     } catch (err) {
       attempt++;
       console.error(
-        ` MongoDB connection failed (attempt ${attempt}/${MAX_RETRIES}):`,
+        `❌  MongoDB connection failed (attempt ${attempt}/${MAX_RETRIES}):`,
         err,
       );
 
       if (attempt === MAX_RETRIES) {
-        console.error("  Could not connect to MongoDB. Exiting.");
+        console.error("💀  Could not connect to MongoDB. Exiting.");
         process.exit(1);
       }
 
@@ -41,8 +39,10 @@ const connectDB = async (): Promise<void> => {
 };
 
 mongoose.connection.on("disconnected", () =>
-  console.warn(" MongoDB disconnected"),
+  console.warn("⚠️  MongoDB disconnected"),
 );
-mongoose.connection.on("reconnected", () => console.log("MongoDB reconnected"));
+mongoose.connection.on("reconnected", () =>
+  console.log("✅  MongoDB reconnected"),
+);
 
 export default connectDB;

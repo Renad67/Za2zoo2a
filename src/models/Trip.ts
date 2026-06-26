@@ -1,102 +1,128 @@
-import { Schema, model, Document, Types } from "mongoose";
-import { TripStatus } from "../types";
-
-export interface ILocationPoint {
-  lat: number;
-  lng: number;
-  address?: string;
-}
+import mongoose, { Document, Schema } from "mongoose";
+import { TripStatus, PaymentMethod, PaymentStatus } from "../types";
 
 export interface ITrip extends Document {
-  _id: Types.ObjectId;
-  rider: Types.ObjectId;
-  driver?: Types.ObjectId;
-
-  origin: ILocationPoint;
-  destination: ILocationPoint;
-
-  routePoints: Array<{ lat: number; lng: number }>;
-  estimatedDistanceKm: number;
-  estimatedDurationMin: number;
-
-  actualDistanceKm?: number;
-  actualDurationMin?: number;
-
-  estimatedFare: number;
-  finalFare?: number;
-  currency: string;
-
+  _id: mongoose.Types.ObjectId;
+  rider: mongoose.Types.ObjectId;
+  driver?: mongoose.Types.ObjectId;
   status: TripStatus;
+  origin: {
+    address: string;
+    coordinates: { lat: number; lng: number };
+  };
+  destination: {
+    address: string;
+    coordinates: { lat: number; lng: number };
+  };
+  routePoints: { lat: number; lng: number }[];
+  fare: {
+    baseFare: number;
+    distanceFare: number;
+    timeFare: number;
+    bookingFee: number;
+    discount: number;
+    total: number;
+    surgeMultiplier: number;
+  };
+  distanceKm: number;
+  estimatedDurationMin: number;
+  actualDurationMin?: number;
+  payment: {
+    method: PaymentMethod;
+    status: PaymentStatus;
+    transactionId?: string;
+  };
+  pin?: string;
+  pinVerified: boolean;
+  riderRating?: number;
+  driverRating?: number;
+  riderReview?: string;
+  driverReview?: string;
+  promoCode?: string;
+  driverLocationHistory: {
+    coordinates: { lat: number; lng: number };
+    timestamp: Date;
+  }[];
   requestedAt: Date;
   acceptedAt?: Date;
   startedAt?: Date;
   completedAt?: Date;
   cancelledAt?: Date;
   cancellationReason?: string;
-
-  riderRating?: number;
-  driverRating?: number;
-  riderComment?: string;
-  driverComment?: string;
-
-  pin: string;
-
+  cancelledBy?: "rider" | "driver" | "system";
   createdAt: Date;
   updatedAt: Date;
 }
-
-const LocationPointSchema = new Schema<ILocationPoint>(
-  {
-    lat: { type: Number, required: true },
-    lng: { type: Number, required: true },
-    address: String,
-  },
-  { _id: false },
-);
 
 const TripSchema = new Schema<ITrip>(
   {
     rider: { type: Schema.Types.ObjectId, ref: "User", required: true },
     driver: { type: Schema.Types.ObjectId, ref: "User" },
-
-    origin: { type: LocationPointSchema, required: true },
-    destination: { type: LocationPointSchema, required: true },
-
-    routePoints: [
-      {
-        lat: Number,
-        lng: Number,
-        _id: false,
-      },
-    ],
-
-    estimatedDistanceKm: { type: Number, required: true },
-    estimatedDurationMin: { type: Number, required: true },
-    actualDistanceKm: Number,
-    actualDurationMin: Number,
-
-    estimatedFare: { type: Number, required: true },
-    finalFare: Number,
-    currency: { type: String, default: "EGP" },
-
     status: {
       type: String,
       enum: Object.values(TripStatus),
-      default: TripStatus.PENDING,
+      default: TripStatus.REQUESTED,
     },
+    origin: {
+      address: { type: String, required: true },
+      coordinates: {
+        lat: { type: Number, required: true },
+        lng: { type: Number, required: true },
+      },
+    },
+    destination: {
+      address: { type: String, required: true },
+      coordinates: {
+        lat: { type: Number, required: true },
+        lng: { type: Number, required: true },
+      },
+    },
+    routePoints: [{ lat: Number, lng: Number }],
+    fare: {
+      baseFare: { type: Number, default: 0 },
+      distanceFare: { type: Number, default: 0 },
+      timeFare: { type: Number, default: 0 },
+      bookingFee: { type: Number, default: 0 },
+      discount: { type: Number, default: 0 },
+      total: { type: Number, default: 0 },
+      surgeMultiplier: { type: Number, default: 1 },
+    },
+    distanceKm: { type: Number, default: 0 },
+    estimatedDurationMin: { type: Number, default: 0 },
+    actualDurationMin: Number,
+    payment: {
+      method: {
+        type: String,
+        enum: Object.values(PaymentMethod),
+        default: PaymentMethod.CARD,
+      },
+      status: {
+        type: String,
+        enum: Object.values(PaymentStatus),
+        default: PaymentStatus.PENDING,
+      },
+      transactionId: String,
+    },
+    pin: { type: String, select: false },
+    pinVerified: { type: Boolean, default: false },
+    riderRating: { type: Number, min: 1, max: 5 },
+    driverRating: { type: Number, min: 1, max: 5 },
+    riderReview: String,
+    driverReview: String,
+    promoCode: String,
+    driverLocationHistory: [
+      {
+        coordinates: { lat: Number, lng: Number },
+        timestamp: { type: Date, default: Date.now },
+      },
+    ],
     requestedAt: { type: Date, default: Date.now },
     acceptedAt: Date,
     startedAt: Date,
     completedAt: Date,
     cancelledAt: Date,
     cancellationReason: String,
-
-    riderRating: { type: Number, min: 1, max: 5 },
-    driverRating: { type: Number, min: 1, max: 5 },
-    riderComment: String,
-    driverComment: String,
-
-    pin: { type: String, required: true },
+    cancelledBy: { type: String, enum: ["rider", "driver", "system"] },
   },
   { timestamps: true },
 );
@@ -105,4 +131,4 @@ TripSchema.index({ rider: 1, status: 1 });
 TripSchema.index({ driver: 1, status: 1 });
 TripSchema.index({ status: 1, requestedAt: -1 });
 
-export const Trip = model<ITrip>("Trip", TripSchema);
+export const Trip = mongoose.model<ITrip>("Trip", TripSchema);

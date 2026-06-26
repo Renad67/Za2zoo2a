@@ -1,77 +1,82 @@
-import { Schema, model, Document, Types } from "mongoose";
+import mongoose, { Document, Schema } from "mongoose";
 import bcrypt from "bcryptjs";
+import { UserRole } from "../types";
 
 export interface IUser extends Document {
-  _id: Types.ObjectId;
-  name: string;
+  _id: mongoose.Types.ObjectId;
+  fullName: string;
+  email: string;
   phone: string;
-  email?: string;
   password: string;
-  role: "rider" | "driver";
-  profilePicture?: string;
-  isActive: boolean;
-  isVerified: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-
-  vehicleInfo?: {
-    make: string;
-    model: string;
-    plate: string;
-    color: string;
-    year: number;
-  };
-  licenseNumber?: string;
+  role: UserRole;
+  profilePhoto?: string;
   rating: number;
   totalRatings: number;
-  totalTrips: number;
-  isAvailable?: boolean;
-  currentLocation?: {
-    lat: number;
-    lng: number;
-    updatedAt: Date;
-  };
-
-  comparePassword(plain: string): Promise<boolean>;
+  isVerified: boolean;
+  isActive: boolean;
+  otp?: string;
+  otpExpiry?: Date;
+  refreshToken?: string;
+  savedLocations: {
+    label: string;
+    address: string;
+    coordinates: { lat: number; lng: number };
+  }[];
+  emergencyContacts: {
+    name: string;
+    relation: string;
+    phone: string;
+  }[];
+  pushToken?: string;
+  createdAt: Date;
+  updatedAt: Date;
+  comparePassword(candidate: string): Promise<boolean>;
 }
 
 const UserSchema = new Schema<IUser>(
   {
-    name: { type: String, required: true, trim: true },
+    fullName: { type: String, required: true, trim: true },
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true,
+    },
     phone: { type: String, required: true, unique: true, trim: true },
-    email: { type: String, trim: true, lowercase: true },
-    password: { type: String, required: true },
-    role: { type: String, enum: ["rider", "driver"], required: true },
-    profilePicture: String,
-    isActive: { type: Boolean, default: true },
-    isVerified: { type: Boolean, default: false },
-
-    vehicleInfo: {
-      make: String,
-      model: String,
-      plate: String,
-      color: String,
-      year: Number,
-    },
-    licenseNumber: String,
-    isAvailable: { type: Boolean, default: false },
-
-    currentLocation: {
-      lat: Number,
-      lng: Number,
-      updatedAt: Date,
-    },
-
+    password: { type: String, required: true, minlength: 6, select: false },
+    role: { type: String, enum: Object.values(UserRole), required: true },
+    profilePhoto: { type: String },
     rating: { type: Number, default: 5.0, min: 1, max: 5 },
     totalRatings: { type: Number, default: 0 },
-    totalTrips: { type: Number, default: 0 },
+    isVerified: { type: Boolean, default: false },
+    isActive: { type: Boolean, default: true },
+    otp: { type: String, select: false },
+    otpExpiry: { type: Date, select: false },
+    refreshToken: { type: String, select: false },
+    savedLocations: [
+      {
+        label: String,
+        address: String,
+        coordinates: { lat: Number, lng: Number },
+      },
+    ],
+    emergencyContacts: [
+      {
+        name: String,
+        relation: String,
+        phone: String,
+      },
+    ],
+    pushToken: { type: String },
   },
   { timestamps: true },
 );
 
 UserSchema.index({ phone: 1 });
-UserSchema.index({ role: 1, isAvailable: 1 }); // find available drivers quickly
+UserSchema.index({ email: 1 });
 
+// Hash password before save
 UserSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();
   this.password = await bcrypt.hash(this.password, 12);
@@ -79,15 +84,19 @@ UserSchema.pre("save", async function (next) {
 });
 
 UserSchema.methods.comparePassword = async function (
-  plain: string,
+  candidate: string,
 ): Promise<boolean> {
-  return bcrypt.compare(plain, this.password as string);
+  return bcrypt.compare(candidate, this.password);
 };
 
+// Strip password from JSON output
 UserSchema.methods.toJSON = function () {
   const obj = this.toObject();
   delete obj.password;
+  delete obj.otp;
+  delete obj.otpExpiry;
+  delete obj.refreshToken;
   return obj;
 };
 
-export const User = model<IUser>("User", UserSchema);
+export const User = mongoose.model<IUser>("User", UserSchema);

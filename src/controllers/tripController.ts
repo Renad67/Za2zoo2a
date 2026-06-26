@@ -1,12 +1,73 @@
 import { Response, NextFunction } from "express";
-import { AuthRequest, Coordinates, TripStatus } from "../types";
+import {
+  AuthRequest,
+  TripStatus,
+  PaymentMethod,
+  NotificationType,
+  WsMessageType,
+} from "../types";
 import { Trip } from "../models/Trip";
+import { Driver } from "../models/Driver";
 import { User } from "../models/User";
-import { getRoute } from "../services/mapService";
-import { calculateFare, generatePin } from "../services/pricingService";
-import { AppError } from "../middleware/errorHandler";
-import { wsBroadcastToTrip } from "../websocket/wsServer";
+import { Wallet } from "../models/Wallet";
+import { getRoute, geocodeAddress, reverseGeocode } from "../services/mapService";
+import { calculateFare } from "../services/pricingService";
+import { generatePin } from "../utils/generateOtp";
+import { createNotification } from "../services/notificationService";
+import { broadcastTripStatus, sendToUser } from "../websocket/wsServer";
+import { ApiError } from "../utils/apiError";
+import { sendSuccess } from "../utils/apiResponse";
 
+// ─────────────────────────────────────────────────────────────────
+//  POST /api/trips/estimate  — get fare estimate before booking
+// ─────────────────────────────────────────────────────────────────
+export const estimateFare = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const { origin, destination, promoCode } = req.body;
+
+    let originCoords = origin.coordinates;
+    let destCoords = destination.coordinates;
+
+    if (!originCoords && origin.address) {
+      const geo = await geocodeAddress(origin.address);
+      originCoords = { lat: geo.lat, lng: geo.lng };
+    }
+    if (!destCoords && destination.address) {
+      const geo = await geocodeAddress(destination.address);
+      destCoords = { lat: geo.lat, lng: geo.lng };
+    }
+
+    const route = await getRoute(originCoords, destCoords);
+    const fare = await calculateFare(
+      route.distance_km,
+      route.duration_min,
+      1,
+      promoCode,
+      req.user?.userId,
+    );
+
+    sendSuccess(res, {
+      fare,
+      route: {
+        distanceKm: route.distance_km,
+        durationMin: route.duration_min,
+        points: route.points,
+      },
+      originCoords,
+      destCoords,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+//  POST /api/trips/request  — rider creates a trip
+// ─────────────────────────────────────────────────────────────────
 export const requestTrip = async (
   req: AuthRequest,
   res: Response,
@@ -14,313 +75,552 @@ export const requestTrip = async (
 ): Promise<void> => {
   try {
     const riderId = req.user!.userId;
-    const {
-      origin,
-      destination,
-    }: {
-      origin: Coordinates & { address?: string };
-      destination: Coordinates & { address?: string };
-    } = req.body;
+    const { origin, destination, paymentMethod, promoCode } = req.body;
 
-    const ongoing = await Trip.findOne({
+    // Block double requests
+    const activeTrip = await Trip.findOne({
       rider: riderId,
       status: {
-        $in: [TripStatus.PENDING, TripStatus.ACCEPTED, TripStatus.ONGOING],
+        $in: [
+          TripStatus.REQUESTED,
+          TripStatus.MATCHING,
+          TripStatus.ACCEPTED,
+          TripStatus.DRIVER_EN_ROUTE,
+          TripStatus.IN_PROGRESS,
+        ],
       },
     });
-    if (ongoing) throw new AppError("You already have an active trip", 409);
+    if (activeTrip) throw new ApiError("You already have an active trip", 400);
 
-    const osrm = await getRoute(origin, destination);
-    const fare = calculateFare(osrm.distance_km, osrm.duration_min);
+    // Resolve addresses ↔ coordinates
+    let originCoords = origin.coordinates;
+    let destCoords = destination.coordinates;
+    let originAddress = origin.address;
+    let destAddress = destination.address;
+
+    if (!originCoords && originAddress) {
+      const geo = await geocodeAddress(originAddress);
+      originCoords = { lat: geo.lat, lng: geo.lng };
+      originAddress = geo.display_name;
+    }
+    if (!originAddress && originCoords) {
+      originAddress = await reverseGeocode(originCoords);
+    }
+    if (!destCoords && destAddress) {
+      const geo = await geocodeAddress(destAddress);
+      destCoords = { lat: geo.lat, lng: geo.lng };
+      destAddress = geo.display_name;
+    }
+    if (!destAddress && destCoords) {
+      destAddress = await reverseGeocode(destCoords);
+    }
+
+    const route = await getRoute(originCoords, destCoords);
+    const fare = await calculateFare(
+      route.distance_km,
+      route.duration_min,
+      1,
+      promoCode,
+      riderId,
+    );
+
+    const pin = generatePin();
 
     const trip = await Trip.create({
       rider: riderId,
-      origin,
-      destination,
-      routePoints: osrm.points,
-      estimatedDistanceKm: osrm.distance_km,
-      estimatedDurationMin: osrm.duration_min,
-      estimatedFare: fare.totalFare,
-      pin: generatePin(),
+      status: TripStatus.MATCHING,
+      origin: { address: originAddress, coordinates: originCoords },
+      destination: { address: destAddress, coordinates: destCoords },
+      routePoints: route.points,
+      fare: {
+        baseFare: fare.baseFare,
+        distanceFare: fare.distanceFare,
+        timeFare: fare.timeFare,
+        bookingFee: fare.bookingFee,
+        discount: fare.discount,
+        total: fare.total,
+        surgeMultiplier: 1,
+      },
+      distanceKm: route.distance_km,
+      estimatedDurationMin: route.duration_min,
+      payment: {
+        method: paymentMethod || PaymentMethod.CARD,
+        status: "pending",
+      },
+      promoCode,
+      pin,
     });
 
-    res.status(201).json({ success: true, data: trip });
-  } catch (err) {
-    next(err);
+    // Notify nearby drivers (simplified — in production use 2dsphere query)
+    const nearbyDrivers = await Driver.find({
+      isOnline: true,
+      isAvailable: true,
+    })
+      .select("user")
+      .limit(10);
+
+    for (const driver of nearbyDrivers) {
+      // Increment offeredTrips for stats
+      await Driver.findByIdAndUpdate(driver._id, {
+        $inc: { "stats.totalOfferedTrips": 1 },
+      });
+
+      sendToUser(driver.user.toString(), {
+        type: WsMessageType.TRIP_STATUS,
+        tripId: trip._id.toString(),
+        origin: trip.origin,
+        destination: trip.destination,
+        fare: trip.fare.total,
+        distanceKm: trip.distanceKm,
+        durationMin: trip.estimatedDurationMin,
+      });
+    }
+
+    sendSuccess(res, { trip, pin }, "Trip requested successfully", 201);
+  } catch (error) {
+    next(error);
   }
 };
 
+// ─────────────────────────────────────────────────────────────────
+//  GET /api/trips/available  — driver sees available trip requests
+// ─────────────────────────────────────────────────────────────────
 export const getAvailableTrips = async (
-  _req: AuthRequest,
+  req: AuthRequest,
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const trips = await Trip.find({ status: TripStatus.PENDING })
-      .populate("rider", "name phone rating profilePicture")
-      .sort({ requestedAt: 1 })
-      .limit(20);
+    const trips = await Trip.find({ status: TripStatus.MATCHING })
+      .sort({ requestedAt: -1 })
+      .limit(20)
+      .populate("rider", "fullName rating profilePhoto");
 
-    res.json({ success: true, data: trips });
-  } catch (err) {
-    next(err);
+    sendSuccess(res, { trips });
+  } catch (error) {
+    next(error);
   }
 };
 
+// ─────────────────────────────────────────────────────────────────
+//  POST /api/trips/:id/accept  — driver accepts a trip
+// ─────────────────────────────────────────────────────────────────
 export const acceptTrip = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const driverId = req.user!.userId;
-    const { id } = req.params;
+    const driverUserId = req.user!.userId;
+    const trip = await Trip.findById(req.params.id);
 
-    const driverBusy = await Trip.findOne({
-      driver: driverId,
-      status: { $in: [TripStatus.ACCEPTED, TripStatus.ONGOING] },
+    if (!trip) throw new ApiError("Trip not found", 404);
+    if (trip.status !== TripStatus.MATCHING)
+      throw new ApiError("Trip is no longer available", 400);
+
+    const driver = await Driver.findOne({ user: driverUserId });
+    if (!driver) throw new ApiError("Driver profile not found", 404);
+    if (!driver.isOnline || !driver.isAvailable)
+      throw new ApiError("Driver is not available", 400);
+
+    trip.driver = driverUserId as unknown as import("mongoose").Types.ObjectId;
+    trip.status = TripStatus.ACCEPTED;
+    trip.acceptedAt = new Date();
+    await trip.save();
+
+    driver.isAvailable = false;
+    await driver.save();
+
+    // Update acceptance stats
+    await Driver.findByIdAndUpdate(driver._id, {
+      $inc: { "stats.totalAcceptedTrips": 1 },
     });
-    if (driverBusy) throw new AppError("You already have an active trip", 409);
 
-    const trip = await Trip.findOneAndUpdate(
-      { _id: id, status: TripStatus.PENDING },
-      { driver: driverId, status: TripStatus.ACCEPTED, acceptedAt: new Date() },
-      { new: true },
-    ).populate("rider", "name phone");
+    const driverUser = await User.findById(driverUserId).select(
+      "fullName rating profilePhoto",
+    );
 
-    if (!trip) throw new AppError("Trip not found or already taken", 404);
-
-    await User.findByIdAndUpdate(driverId, { isAvailable: false });
-
-    wsBroadcastToTrip(String(trip._id), {
-      type: "trip_accepted",
-      tripId: String(trip._id),
-      payload: { driverId },
+    broadcastTripStatus(trip._id.toString(), TripStatus.ACCEPTED, {
+      driver: {
+        name: driverUser?.fullName,
+        rating: driverUser?.rating,
+        photo: driverUser?.profilePhoto,
+        vehicle: driver.vehicle,
+      },
     });
 
-    res.json({ success: true, data: trip });
-  } catch (err) {
-    next(err);
+    await createNotification(
+      trip.rider.toString(),
+      "Driver Found!",
+      `${driverUser?.fullName} is on the way`,
+      NotificationType.TRIP_UPDATE,
+      { tripId: trip._id.toString() },
+    );
+
+    sendSuccess(res, { trip }, "Trip accepted");
+  } catch (error) {
+    next(error);
   }
 };
 
+// ─────────────────────────────────────────────────────────────────
+//  POST /api/trips/:id/arrived  — driver arrived at pickup
+// ─────────────────────────────────────────────────────────────────
+export const driverArrived = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const trip = await Trip.findById(req.params.id);
+    if (!trip) throw new ApiError("Trip not found", 404);
+    if (trip.driver?.toString() !== req.user!.userId)
+      throw new ApiError("Unauthorized", 403);
+    if (trip.status !== TripStatus.ACCEPTED)
+      throw new ApiError("Invalid trip status", 400);
+
+    trip.status = TripStatus.ARRIVED;
+    await trip.save();
+
+    broadcastTripStatus(trip._id.toString(), TripStatus.ARRIVED);
+
+    await createNotification(
+      trip.rider.toString(),
+      "Driver Arrived",
+      "Your driver is waiting at the pickup location",
+      NotificationType.TRIP_UPDATE,
+      { tripId: trip._id.toString() },
+    );
+
+    sendSuccess(res, { trip }, "Arrival confirmed");
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+//  POST /api/trips/:id/verify-pin  — verify rider PIN before start
+// ─────────────────────────────────────────────────────────────────
+export const verifyPin = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const { pin } = req.body;
+    const trip = await Trip.findById(req.params.id).select("+pin");
+    if (!trip) throw new ApiError("Trip not found", 404);
+    if (trip.driver?.toString() !== req.user!.userId)
+      throw new ApiError("Unauthorized", 403);
+
+    if (trip.pin !== pin) throw new ApiError("Invalid PIN", 400);
+
+    trip.pinVerified = true;
+    await trip.save();
+
+    sendSuccess(res, null, "PIN verified");
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+//  POST /api/trips/:id/start  — driver starts trip
+// ─────────────────────────────────────────────────────────────────
 export const startTrip = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const driverId = req.user!.userId;
-    const { id } = req.params;
-    const { pin }: { pin: string } = req.body;
+    const trip = await Trip.findById(req.params.id);
+    if (!trip) throw new ApiError("Trip not found", 404);
+    if (trip.driver?.toString() !== req.user!.userId)
+      throw new ApiError("Unauthorized", 403);
+    if (
+      ![TripStatus.ARRIVED, TripStatus.ACCEPTED].includes(trip.status as TripStatus)
+    )
+      throw new ApiError("Invalid trip status", 400);
 
-    const trip = await Trip.findOne({
-      _id: id,
-      driver: driverId,
-      status: TripStatus.ACCEPTED,
-    });
-    if (!trip) throw new AppError("Trip not found", 404);
-
-    if (trip.pin !== pin) throw new AppError("Invalid PIN", 400);
-
-    trip.status = TripStatus.ONGOING;
+    trip.status = TripStatus.IN_PROGRESS;
     trip.startedAt = new Date();
     await trip.save();
 
-    wsBroadcastToTrip(String(trip._id), {
-      type: "trip_started",
-      tripId: String(trip._id),
-    });
+    broadcastTripStatus(trip._id.toString(), TripStatus.IN_PROGRESS);
 
-    res.json({ success: true, data: trip });
-  } catch (err) {
-    next(err);
+    await createNotification(
+      trip.rider.toString(),
+      "Trip Started",
+      "Your trip is now in progress. Enjoy the ride!",
+      NotificationType.TRIP_UPDATE,
+      { tripId: trip._id.toString() },
+    );
+
+    sendSuccess(res, { trip }, "Trip started");
+  } catch (error) {
+    next(error);
   }
 };
 
-export const completeTrip = async (
+// ─────────────────────────────────────────────────────────────────
+//  POST /api/trips/:id/end  — driver ends trip
+// ─────────────────────────────────────────────────────────────────
+export const endTrip = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const driverId = req.user!.userId;
-    const { id } = req.params;
+    const trip = await Trip.findById(req.params.id);
+    if (!trip) throw new ApiError("Trip not found", 404);
+    if (trip.driver?.toString() !== req.user!.userId)
+      throw new ApiError("Unauthorized", 403);
+    if (trip.status !== TripStatus.IN_PROGRESS)
+      throw new ApiError("Trip is not in progress", 400);
 
-    const trip = await Trip.findOne({
-      _id: id,
-      driver: driverId,
-      status: TripStatus.ONGOING,
-    });
-    if (!trip) throw new AppError("Trip not found", 404);
-
+    const now = new Date();
     const actualDurationMin = trip.startedAt
-      ? parseFloat(
-          ((Date.now() - trip.startedAt.getTime()) / 60_000).toFixed(1),
-        )
+      ? Math.ceil((now.getTime() - trip.startedAt.getTime()) / 60000)
       : trip.estimatedDurationMin;
 
-    const fare = calculateFare(trip.estimatedDistanceKm, actualDurationMin);
-
     trip.status = TripStatus.COMPLETED;
-    trip.completedAt = new Date();
+    trip.completedAt = now;
     trip.actualDurationMin = actualDurationMin;
-    trip.actualDistanceKm = trip.estimatedDistanceKm;
-    trip.finalFare = fare.totalFare;
+    trip.payment.status = "completed" as import("../types").PaymentStatus;
     await trip.save();
 
-    await User.findByIdAndUpdate(driverId, { isAvailable: true });
-    await User.findByIdAndUpdate(driverId, { $inc: { totalTrips: 1 } });
-    await User.findByIdAndUpdate(trip.rider, { $inc: { totalTrips: 1 } });
+    // Update driver earnings + stats
+    await Driver.findOneAndUpdate(
+      { user: req.user!.userId },
+      {
+        $inc: {
+          "earnings.totalLifetime": trip.fare.total,
+          "earnings.pendingBalance": trip.fare.total,
+          "stats.totalTrips": 1,
+          "stats.totalDistanceKm": trip.distanceKm,
+        },
+        isAvailable: true,
+      },
+    );
 
-    wsBroadcastToTrip(String(trip._id), {
-      type: "trip_completed",
-      tripId: String(trip._id),
-      payload: { finalFare: fare.totalFare },
+    // Deduct from rider wallet if wallet payment
+    if (trip.payment.method === PaymentMethod.WALLET) {
+      await Wallet.findOneAndUpdate(
+        { user: trip.rider },
+        {
+          $inc: { balance: -trip.fare.total },
+          $push: {
+            transactions: {
+              amount: trip.fare.total,
+              type: "debit",
+              description: `Trip to ${trip.destination.address}`,
+              tripId: trip._id,
+            },
+          },
+        },
+      );
+    }
+
+    broadcastTripStatus(trip._id.toString(), TripStatus.COMPLETED, {
+      fare: trip.fare,
     });
 
-    res.json({ success: true, data: trip });
-  } catch (err) {
-    next(err);
+    await createNotification(
+      trip.rider.toString(),
+      "Trip Completed!",
+      `You have arrived at ${trip.destination.address}. Total: ${trip.fare.total} EGP`,
+      NotificationType.TRIP_UPDATE,
+      { tripId: trip._id.toString() },
+    );
+
+    sendSuccess(res, { trip }, "Trip completed");
+  } catch (error) {
+    next(error);
   }
 };
 
+// ─────────────────────────────────────────────────────────────────
+//  POST /api/trips/:id/cancel  — rider or driver cancels
+// ─────────────────────────────────────────────────────────────────
 export const cancelTrip = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const userId = req.user!.userId;
-    const role = req.user!.role;
-    const { id } = req.params;
-    const { reason }: { reason?: string } = req.body;
+    const { reason } = req.body;
+    const trip = await Trip.findById(req.params.id);
+    if (!trip) throw new ApiError("Trip not found", 404);
 
-    const query =
-      role === "rider"
-        ? {
-            _id: id,
-            rider: userId,
-            status: { $in: [TripStatus.PENDING, TripStatus.ACCEPTED] },
-          }
-        : { _id: id, driver: userId, status: TripStatus.ACCEPTED };
+    const isRider = trip.rider.toString() === req.user!.userId;
+    const isDriver = trip.driver?.toString() === req.user!.userId;
+    if (!isRider && !isDriver) throw new ApiError("Unauthorized", 403);
 
-    const trip = await Trip.findOneAndUpdate(
-      query,
-      {
-        status: TripStatus.CANCELLED,
-        cancelledAt: new Date(),
-        cancellationReason: reason,
-      },
-      { new: true },
-    );
+    const cancellableStatuses = [
+      TripStatus.REQUESTED,
+      TripStatus.MATCHING,
+      TripStatus.ACCEPTED,
+      TripStatus.DRIVER_EN_ROUTE,
+      TripStatus.ARRIVED,
+    ];
+    if (!cancellableStatuses.includes(trip.status as TripStatus))
+      throw new ApiError("Trip cannot be cancelled", 400);
 
-    if (!trip) throw new AppError("Trip not found or cannot be cancelled", 404);
+    trip.status = TripStatus.CANCELLED;
+    trip.cancelledAt = new Date();
+    trip.cancellationReason = reason;
+    trip.cancelledBy = isRider ? "rider" : "driver";
+    await trip.save();
 
-    if (trip.driver)
-      await User.findByIdAndUpdate(trip.driver, { isAvailable: true });
+    if (trip.driver) {
+      await Driver.findOneAndUpdate(
+        { user: trip.driver },
+        {
+          isAvailable: true,
+          $inc: { "stats.totalCancelledTrips": 1 },
+        },
+      );
+    }
 
-    wsBroadcastToTrip(String(trip._id), {
-      type: "trip_cancelled",
-      tripId: String(trip._id),
-    });
+    broadcastTripStatus(trip._id.toString(), TripStatus.CANCELLED, { reason });
 
-    res.json({ success: true, data: trip });
-  } catch (err) {
-    next(err);
+    // Notify the other party
+    const notifyUserId = isRider
+      ? trip.driver?.toString()
+      : trip.rider.toString();
+    if (notifyUserId) {
+      await createNotification(
+        notifyUserId,
+        "Trip Cancelled",
+        reason || "The trip has been cancelled",
+        NotificationType.TRIP_UPDATE,
+        { tripId: trip._id.toString() },
+      );
+    }
+
+    sendSuccess(res, { trip }, "Trip cancelled");
+  } catch (error) {
+    next(error);
   }
 };
 
+// ─────────────────────────────────────────────────────────────────
+//  POST /api/trips/:id/rate  — rider rates driver or vice versa
+// ─────────────────────────────────────────────────────────────────
 export const rateTrip = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const role = req.user!.role;
-    const { id } = req.params;
-    const { rating, comment }: { rating: number; comment?: string } = req.body;
+    const { rating, review } = req.body;
+    const trip = await Trip.findById(req.params.id);
+    if (!trip) throw new ApiError("Trip not found", 404);
+    if (trip.status !== TripStatus.COMPLETED)
+      throw new ApiError("Can only rate completed trips", 400);
 
-    const trip = await Trip.findOne({ _id: id, status: TripStatus.COMPLETED });
-    if (!trip) throw new AppError("Completed trip not found", 404);
+    const isRider = trip.rider.toString() === req.user!.userId;
+    const isDriver = trip.driver?.toString() === req.user!.userId;
 
-    if (role === "rider") {
-      trip.driverRating = rating;
-      trip.driverComment = comment;
+    if (!isRider && !isDriver) throw new ApiError("Unauthorized", 403);
 
-      const driver = await User.findById(trip.driver);
-      if (driver) {
-        const newTotal = driver.totalRatings + 1;
-        driver.rating =
-          (driver.rating * driver.totalRatings + rating) / newTotal;
-        driver.totalRatings = newTotal;
-        await driver.save();
-      }
-    } else {
+    let targetUserId: string;
+    if (isRider) {
+      if (trip.riderRating) throw new ApiError("Already rated", 400);
       trip.riderRating = rating;
-      trip.riderComment = comment;
+      trip.riderReview = review;
+      targetUserId = trip.driver!.toString();
+    } else {
+      if (trip.driverRating) throw new ApiError("Already rated", 400);
+      trip.driverRating = rating;
+      trip.driverReview = review;
+      targetUserId = trip.rider.toString();
+    }
+    await trip.save();
 
-      const rider = await User.findById(trip.rider);
-      if (rider) {
-        const newTotal = rider.totalRatings + 1;
-        rider.rating = (rider.rating * rider.totalRatings + rating) / newTotal;
-        rider.totalRatings = newTotal;
-        await rider.save();
-      }
+    // Update target user's average rating
+    const targetUser = await User.findById(targetUserId);
+    if (targetUser) {
+      const newTotal = targetUser.totalRatings + 1;
+      targetUser.rating = parseFloat(
+        (
+          (targetUser.rating * targetUser.totalRatings + rating) /
+          newTotal
+        ).toFixed(2),
+      );
+      targetUser.totalRatings = newTotal;
+      await targetUser.save();
     }
 
-    await trip.save();
-    res.json({ success: true, data: trip });
-  } catch (err) {
-    next(err);
+    await createNotification(
+      targetUserId,
+      "New Rating",
+      `You received a ${rating}-star rating`,
+      NotificationType.RATING,
+      { tripId: trip._id.toString(), rating },
+    );
+
+    sendSuccess(res, null, "Rating submitted");
+  } catch (error) {
+    next(error);
   }
 };
 
+// ─────────────────────────────────────────────────────────────────
+//  GET /api/trips/history  — trip history (rider or driver)
+// ─────────────────────────────────────────────────────────────────
 export const getTripHistory = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
   try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    const skip = (page - 1) * limit;
+
     const userId = req.user!.userId;
     const role = req.user!.role;
-    const page = Math.max(1, parseInt(String(req.query.page ?? "1")));
-    const limit = Math.min(50, parseInt(String(req.query.limit ?? "10")));
 
-    const filter = role === "rider" ? { rider: userId } : { driver: userId };
+    const query =
+      role === "driver" ? { driver: userId } : { rider: userId };
 
     const [trips, total] = await Promise.all([
-      Trip.find({ ...filter, status: TripStatus.COMPLETED })
-        .populate("rider driver", "name phone rating profilePicture")
+      Trip.find({ ...query, status: TripStatus.COMPLETED })
         .sort({ completedAt: -1 })
-        .skip((page - 1) * limit)
-        .limit(limit),
-      Trip.countDocuments({ ...filter, status: TripStatus.COMPLETED }),
+        .skip(skip)
+        .limit(limit)
+        .populate("rider", "fullName rating profilePhoto")
+        .populate("driver", "fullName rating profilePhoto"),
+      Trip.countDocuments({ ...query, status: TripStatus.COMPLETED }),
     ]);
 
-    res.json({
-      success: true,
-      data: trips,
-      meta: { page, limit, total, pages: Math.ceil(total / limit) },
+    sendSuccess(res, {
+      trips,
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) },
     });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    next(error);
   }
 };
 
+// ─────────────────────────────────────────────────────────────────
+//  GET /api/trips/:id  — get single trip
+// ─────────────────────────────────────────────────────────────────
 export const getTripById = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const trip = await Trip.findById(req.params.id).populate(
-      "rider driver",
-      "name phone rating profilePicture vehicleInfo",
-    );
-    if (!trip) throw new AppError("Trip not found", 404);
-    res.json({ success: true, data: trip });
-  } catch (err) {
-    next(err);
+    const trip = await Trip.findById(req.params.id)
+      .populate("rider", "fullName rating profilePhoto phone")
+      .populate("driver", "fullName rating profilePhoto phone");
+
+    if (!trip) throw new ApiError("Trip not found", 404);
+
+    sendSuccess(res, { trip });
+  } catch (error) {
+    next(error);
   }
 };

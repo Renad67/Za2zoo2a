@@ -3,3 +3,6 @@ dist/
 .env
 *.log
 .DS_Store
+files_extracted/
+files.zip
+uploads/
