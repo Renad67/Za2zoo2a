@@ -5,6 +5,10 @@ import { Trip } from "../models/Trip";
 import { Driver } from "../models/Driver";
 import { WsMessageType, TripStatus } from "../types";
 import { env } from "../config/env";
+import {
+  notifyIdleAlert,
+  notifyDriverApproaching,
+} from "../services/tripNotificationService";
 
 interface AuthenticatedWebSocket extends WebSocket {
   userId?: string;
@@ -25,6 +29,36 @@ const riderConnections = new Map<string, AuthenticatedWebSocket>();
 const driverConnections = new Map<string, AuthenticatedWebSocket>();
 const userSockets = new Map<string, AuthenticatedWebSocket>();
 
+// ── Idle & Approaching Detection State ────────────────────────────
+interface TripLocationState {
+  lastLat: number;
+  lastLng: number;
+  lastMovedAt: number; // timestamp ms
+  approachingNotified: boolean;
+}
+const tripLocationState = new Map<string, TripLocationState>();
+
+/** Distance between two lat/lng points in meters (Haversine). */
+function haversineMeters(
+  lat1: number, lng1: number,
+  lat2: number, lng2: number,
+): number {
+  const R = 6_371_000; // Earth radius in meters
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// ── Constants ─────────────────────────────────────────────────────
+const IDLE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+const IDLE_CHECK_INTERVAL_MS = 60 * 1000; // check every 60 seconds
+const MOVEMENT_THRESHOLD_M = 50; // must move >50m to count as "moving"
+const APPROACHING_DISTANCE_M = 500; // ~2 min in city traffic
+
 export const setupWebSocket = (server: http.Server): WebSocketServer => {
   const wss = new WebSocketServer({ server, path: "/ws" });
 
@@ -41,7 +75,35 @@ export const setupWebSocket = (server: http.Server): WebSocketServer => {
     });
   }, env.WS_HEARTBEAT_INTERVAL);
 
-  wss.on("close", () => clearInterval(heartbeat));
+  // ── Idle Alert Scanner ──────────────────────────────────────────
+  const idleScanner = setInterval(async () => {
+    const now = Date.now();
+    for (const [tripId, state] of tripLocationState.entries()) {
+      const idleDuration = now - state.lastMovedAt;
+      if (idleDuration >= IDLE_THRESHOLD_MS) {
+        try {
+          const trip = await Trip.findById(tripId).select("rider status");
+          if (trip && trip.status === TripStatus.IN_PROGRESS) {
+            const idleMin = Math.floor(idleDuration / 60_000);
+            await notifyIdleAlert(
+              trip.rider.toString(),
+              tripId,
+              idleMin,
+            );
+            // Reset timer so we don't spam — next alert in another 10 min
+            state.lastMovedAt = now;
+          }
+        } catch (err) {
+          console.error(`Idle scan error for trip ${tripId}:`, err);
+        }
+      }
+    }
+  }, IDLE_CHECK_INTERVAL_MS);
+
+  wss.on("close", () => {
+    clearInterval(heartbeat);
+    clearInterval(idleScanner);
+  });
 
   wss.on("connection", (ws: AuthenticatedWebSocket, req) => {
     ws.isAlive = true;
@@ -196,6 +258,49 @@ async function handleDriverLocation(
     },
   }).exec();
 
+  // ── Idle detection: track movement ──────────────────────────────
+  const existing = tripLocationState.get(tripId);
+  const now = Date.now();
+
+  if (existing) {
+    const distMoved = haversineMeters(existing.lastLat, existing.lastLng, lat, lng);
+    if (distMoved > MOVEMENT_THRESHOLD_M) {
+      existing.lastLat = lat;
+      existing.lastLng = lng;
+      existing.lastMovedAt = now;
+    }
+  } else {
+    tripLocationState.set(tripId, {
+      lastLat: lat,
+      lastLng: lng,
+      lastMovedAt: now,
+      approachingNotified: false,
+    });
+  }
+
+  // ── Driver approaching detection (#5) ───────────────────────────
+  const trip = await Trip.findById(tripId).select("rider origin status");
+  if (trip) {
+    const preArrivalStatuses = [TripStatus.ACCEPTED, TripStatus.DRIVER_EN_ROUTE];
+    if (preArrivalStatuses.includes(trip.status as TripStatus)) {
+      const distToPickup = haversineMeters(
+        lat, lng,
+        trip.origin.coordinates.lat, trip.origin.coordinates.lng,
+      );
+
+      const state = tripLocationState.get(tripId);
+      if (state && distToPickup <= APPROACHING_DISTANCE_M && !state.approachingNotified) {
+        state.approachingNotified = true;
+        const etaMinutes = Math.max(1, Math.round(distToPickup / 250)); // rough: ~250m/min in city
+        notifyDriverApproaching(
+          trip.rider.toString(),
+          tripId,
+          etaMinutes,
+        ).catch((err) => console.error("Approaching notification error:", err));
+      }
+    }
+  }
+
   // Forward to rider
   const riderWs = riderConnections.get(tripId);
   if (riderWs && riderWs.readyState === WebSocket.OPEN) {
@@ -244,12 +349,17 @@ const sendToSocket = (
   ws: WebSocket,
   data: Record<string, unknown>,
 ): void => {
-  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
+  if (ws.readyState === WebSocket.OPEN) {
+    console.log(`📤 WS SENT: ${data.type}`, data);
+    ws.send(JSON.stringify(data));
+  }
 };
 
 const cleanupConnection = (ws: AuthenticatedWebSocket): void => {
   if (ws.tripId) {
     if (ws.role === "driver") driverConnections.delete(ws.tripId);
     else riderConnections.delete(ws.tripId);
+    // Clean up location state when driver disconnects
+    if (ws.role === "driver") tripLocationState.delete(ws.tripId);
   }
 };

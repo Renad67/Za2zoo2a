@@ -13,6 +13,11 @@ import {
   rateTrip,
   getTripHistory,
   getTripById,
+  updateDestination,
+  sendChatMessage,
+  getChatMessages,
+  shareTrip,
+  getLiveLocation,
 } from "../controllers/tripController";
 import { protect, restrictTo } from "../middleware/auth";
 import { validate } from "../middleware/validate";
@@ -20,6 +25,10 @@ import { UserRole } from "../types";
 
 const router = Router();
 
+// ── Public (no auth) ─ live location sharing ───────────────────────
+router.get("/live/:shareToken", getLiveLocation);
+
+// All routes below require authentication
 router.use(protect);
 
 // ── Shared ──────────────────────────────────────────────────────────
@@ -30,14 +39,20 @@ router.post(
 );
 
 router.get("/history", getTripHistory);
-router.get("/:id", getTripById);
-
 router.post("/:id/cancel", cancelTrip);
 router.post(
   "/:id/rate",
   [body("rating").isInt({ min: 1, max: 5 }), validate],
   rateTrip,
 );
+
+// ── Chat (rider or driver) ──────────────────────────────────────────
+router.post(
+  "/:id/chat",
+  [body("message").trim().notEmpty().withMessage("Message is required"), validate],
+  sendChatMessage,
+);
+router.get("/:id/chat", getChatMessages);
 
 // ── Rider only ──────────────────────────────────────────────────────
 router.post(
@@ -46,6 +61,13 @@ router.post(
   [body("origin").notEmpty(), body("destination").notEmpty(), validate],
   requestTrip,
 );
+router.post(
+  "/:id/update-destination",
+  restrictTo(UserRole.RIDER),
+  [body("destination").notEmpty().withMessage("New destination is required"), validate],
+  updateDestination,
+);
+router.post("/:id/share", restrictTo(UserRole.RIDER), shareTrip);
 
 // ── Driver only ─────────────────────────────────────────────────────
 router.get("/available", restrictTo(UserRole.DRIVER), getAvailableTrips);
@@ -59,5 +81,8 @@ router.post(
 );
 router.post("/:id/start", restrictTo(UserRole.DRIVER), startTrip);
 router.post("/:id/end", restrictTo(UserRole.DRIVER), endTrip);
+
+// ── Dynamic Catch-all (must be at the bottom) ───────────────────────
+router.get("/:id", getTripById);
 
 export default router;

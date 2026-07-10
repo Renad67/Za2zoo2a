@@ -50,6 +50,7 @@ export interface ITrip extends Document {
   cancelledAt?: Date;
   cancellationReason?: string;
   cancelledBy?: "rider" | "driver" | "system";
+  shareToken?: string; // unique token for live location sharing
   createdAt: Date;
   updatedAt: Date;
 }
@@ -123,6 +124,7 @@ const TripSchema = new Schema<ITrip>(
     cancelledAt: Date,
     cancellationReason: String,
     cancelledBy: { type: String, enum: ["rider", "driver", "system"] },
+    shareToken: { type: String, unique: true, sparse: true },
   },
   { timestamps: true },
 );
@@ -130,5 +132,6 @@ const TripSchema = new Schema<ITrip>(
 TripSchema.index({ rider: 1, status: 1 });
 TripSchema.index({ driver: 1, status: 1 });
 TripSchema.index({ status: 1, requestedAt: -1 });
+TripSchema.index({ shareToken: 1 }, { unique: true, sparse: true });
 
 export const Trip = mongoose.model<ITrip>("Trip", TripSchema);

@@ -38,6 +38,19 @@ export enum NotificationType {
   PROMO = "promo",
   SYSTEM = "system",
   RATING = "rating",
+
+  // ── Granular trip events ─────────────────────────────────
+  RIDE_ACCEPTED = "ride_accepted",
+  DRIVER_ARRIVED = "driver_arrived",
+  IDLE_ALERT = "idle_alert",
+  DRIVER_CANCELLED = "driver_cancelled",
+  DRIVER_APPROACHING = "driver_approaching",
+  RIDE_STARTED = "ride_started",
+  RIDE_COMPLETED = "ride_completed",
+  NEW_RIDE_REQUEST = "new_ride_request",
+  RIDER_CANCELLED = "rider_cancelled",
+  DESTINATION_CHANGED = "destination_changed",
+  CHAT_MESSAGE = "chat_message",
 }
 
 export enum DriverDocumentStatus {
@@ -61,6 +74,19 @@ export enum WsMessageType {
   TRIP_STATUS = "trip_status",
   DRIVER_ACCEPTED = "driver_accepted",
   ERROR = "error",
+
+  // ── Notification events (Server → Client) ───────────────
+  RIDE_ACCEPTED = "ride_accepted",
+  DRIVER_ARRIVED = "driver_arrived",
+  IDLE_ALERT = "idle_alert",
+  DRIVER_APPROACHING = "driver_approaching",
+  RIDE_STARTED = "ride_started",
+  RIDE_COMPLETED = "ride_completed",
+  NEW_RIDE_REQUEST = "new_ride_request",
+  DESTINATION_CHANGED = "destination_changed",
+  NEW_CHAT_MESSAGE = "new_chat_message",
+  DRIVER_CANCELLED = "driver_cancelled",
+  RIDER_CANCELLED = "rider_cancelled",
 }
 
 // ── Interfaces ────────────────────────────────────────────────────
