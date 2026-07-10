@@ -19,6 +19,10 @@ import {
   uploadDocument,
   getDocuments,
 } from "../controllers/driverController";
+import {
+  getOnlineTimeToday,
+  getOnlineTimeWeekly,
+} from "../controllers/onlineTimeController";
 import { protect, restrictTo } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 import { uploadPhoto, uploadDocument as uploadDocMiddleware } from "../middleware/upload";
@@ -56,6 +60,10 @@ router.get("/earnings", getEarnings);
 router.get("/balance", getBalance);
 router.get("/bonus", getBonus);
 router.get("/stats", getStats);
+
+// ── Online Time ────────────────────────────────────────────────────
+router.get("/online-time/today", getOnlineTimeToday);
+router.get("/online-time/weekly", getOnlineTimeWeekly);
 
 // ── Trips ──────────────────────────────────────────────────────────
 router.get("/trips", getDriverTrips);

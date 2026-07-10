@@ -41,4 +41,13 @@ export const env = {
   // Uploads
   UPLOAD_DIR: process.env.UPLOAD_DIR ?? "uploads",
   MAX_FILE_SIZE_MB: toInt(process.env.MAX_FILE_SIZE_MB, 5),
+
+  // SMTP / Email
+  SMTP_HOST: process.env.SMTP_HOST ?? "smtp-relay.brevo.com",
+  SMTP_PORT: toInt(process.env.SMTP_PORT, 587),
+  SMTP_SECURE: process.env.SMTP_SECURE === "true",
+  SMTP_USER: process.env.SMTP_USER ?? "",
+  SMTP_PASS: process.env.SMTP_PASS ?? "",
+  SMTP_FROM_NAME: process.env.SMTP_FROM_NAME ?? "Za2zoo2a",
+  SMTP_FROM_EMAIL: process.env.SMTP_FROM_EMAIL ?? "noreply@za2zoo2a.com",
 } as const;

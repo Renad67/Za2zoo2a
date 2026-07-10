@@ -3,6 +3,7 @@ import { AuthRequest, TripStatus, DriverDocumentStatus } from "../types";
 import { Driver } from "../models/Driver";
 import { Trip } from "../models/Trip";
 import { User } from "../models/User";
+import { OnlineSession } from "../models/OnlineSession";
 import { ApiError } from "../utils/apiError";
 import { sendSuccess } from "../utils/apiResponse";
 
@@ -16,12 +17,55 @@ export const toggleOnlineStatus = async (
 ): Promise<void> => {
   try {
     const { isOnline } = req.body;
-    const driver = await Driver.findOneAndUpdate(
-      { user: req.user!.userId },
-      { isOnline, isAvailable: isOnline },
-      { new: true },
-    );
+    const userId = req.user!.userId;
+
+    const driver = await Driver.findOne({ user: userId });
     if (!driver) throw new ApiError("Driver profile not found", 404);
+
+    if (isOnline) {
+      // ── Going ONLINE ──────────────────────────────────────────
+      // Idempotent: only create a session if there isn't an open one
+      const existingOpen = await OnlineSession.findOne({
+        driver: userId,
+        endedAt: null,
+      });
+
+      if (!existingOpen) {
+        await OnlineSession.create({
+          driver: userId,
+          startedAt: new Date(),
+        });
+      }
+    } else {
+      // ── Going OFFLINE ─────────────────────────────────────────
+      // Find and close the open session
+      const openSession = await OnlineSession.findOne({
+        driver: userId,
+        endedAt: null,
+      });
+
+      if (openSession) {
+        const now = new Date();
+        const durationMs = now.getTime() - openSession.startedAt.getTime();
+
+        openSession.endedAt = now;
+        openSession.durationMs = durationMs;
+        await openSession.save();
+
+        // Increment the lifetime counter on Driver.stats
+        const durationMin = Math.round(durationMs / 60_000);
+        await Driver.findOneAndUpdate(
+          { user: userId },
+          { $inc: { "stats.totalOnlineMinutes": durationMin } },
+        );
+      }
+    }
+
+    // Update driver status flags
+    driver.isOnline = isOnline;
+    driver.isAvailable = isOnline;
+    await driver.save();
+
     sendSuccess(
       res,
       { isOnline: driver.isOnline },

@@ -7,6 +7,8 @@ import {
   refreshTokenHandler,
   logout,
   resendOtp,
+  forgotPassword,
+  resetPassword,
 } from "../controllers/authController";
 import { validate } from "../middleware/validate";
 import { protect } from "../middleware/auth";
@@ -56,6 +58,30 @@ router.post(
   "/resend-otp",
   [body("userId").notEmpty(), validate],
   resendOtp,
+);
+
+router.post(
+  "/forgot-password",
+  [
+    body("email").isEmail().withMessage("Valid email is required"),
+    validate,
+  ],
+  forgotPassword,
+);
+
+router.post(
+  "/reset-password",
+  [
+    body("userId").notEmpty().withMessage("User ID is required"),
+    body("otp")
+      .isLength({ min: 6, max: 6 })
+      .withMessage("OTP must be 6 digits"),
+    body("newPassword")
+      .isLength({ min: 6 })
+      .withMessage("New password must be at least 6 characters"),
+    validate,
+  ],
+  resetPassword,
 );
 
 export default router;
