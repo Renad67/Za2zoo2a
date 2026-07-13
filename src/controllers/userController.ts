@@ -115,6 +115,55 @@ export const removeEmergencyContact = async (
   }
 };
 
+// POST /api/users/me/saved-locations
+export const addSavedLocation = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const { label, address, coordinates } = req.body;
+    if (!label || !address || !coordinates) {
+      throw new ApiError("Label, address, and coordinates are required", 400);
+    }
+    
+    const user = await User.findByIdAndUpdate(
+      req.user!.userId,
+      { $push: { savedLocations: { label, address, coordinates } } },
+      { new: true },
+    );
+    sendSuccess(
+      res,
+      { savedLocations: user?.savedLocations },
+      "Location saved successfully",
+    );
+  } catch (error) {
+    next(error);
+  }
+};
+
+// DELETE /api/users/me/saved-locations/:locationId
+export const removeSavedLocation = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.user!.userId,
+      { $pull: { savedLocations: { _id: req.params.locationId } } },
+      { new: true },
+    );
+    sendSuccess(
+      res,
+      { savedLocations: user?.savedLocations },
+      "Saved location removed",
+    );
+  } catch (error) {
+    next(error);
+  }
+};
+
 // DELETE /api/users/me  — soft delete account
 export const deleteAccount = async (
   req: AuthRequest,

@@ -8,6 +8,8 @@ import {
   removeEmergencyContact,
   deleteAccount,
   getDriverProfile,
+  addSavedLocation,
+  removeSavedLocation,
 } from "../controllers/userController";
 import { protect } from "../middleware/auth";
 import { validate } from "../middleware/validate";
@@ -33,6 +35,21 @@ router.post(
 );
 
 router.delete("/me/emergency-contacts/:contactId", removeEmergencyContact);
+
+// Saved Locations
+router.post(
+  "/me/saved-locations",
+  [
+    body("label").notEmpty().withMessage("Label (e.g. Home, Work) is required"),
+    body("address").notEmpty(),
+    body("coordinates.lat").isNumeric(),
+    body("coordinates.lng").isNumeric(),
+    validate,
+  ],
+  addSavedLocation,
+);
+router.delete("/me/saved-locations/:locationId", removeSavedLocation);
+
 router.get("/driver/:userId", getDriverProfile);
 
 export default router;
