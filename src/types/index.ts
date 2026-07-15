@@ -6,6 +6,7 @@ import { Document, Types } from "mongoose";
 export enum UserRole {
   RIDER = "rider",
   DRIVER = "driver",
+  ADMIN = "admin",
 }
 
 export enum TripStatus {

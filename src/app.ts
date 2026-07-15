@@ -15,6 +15,8 @@ import tripRoutes from "./routes/tripRoutes";
 import mapRoutes from "./routes/mapRoutes";
 import walletRoutes from "./routes/walletRoutes";
 import notificationRoutes from "./routes/notificationRoutes";
+import adminRoutes from "./routes/adminRoutes";
+import pricingRoutes from "./routes/pricingRoutes";
 
 const app = express();
 
@@ -84,6 +86,8 @@ app.use("/api/trips", tripRoutes);
 app.use("/api/map", mapRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/pricing", pricingRoutes);
 
 // ── 404 handler ───────────────────────────────────────────────────
 app.use(notFound);

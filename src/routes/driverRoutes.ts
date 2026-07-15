@@ -23,6 +23,10 @@ import {
   getOnlineTimeToday,
   getOnlineTimeWeekly,
 } from "../controllers/onlineTimeController";
+import {
+  submitSelfie,
+  getSelfieStatus,
+} from "../controllers/selfieCheckController";
 import { protect, restrictTo } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 import { uploadPhoto, uploadDocument as uploadDocMiddleware } from "../middleware/upload";
@@ -83,5 +87,9 @@ router.post(
   uploadDocMiddleware.single("document"),
   uploadDocument,
 );
+
+// ── Selfie Check ──────────────────────────────────────────────────────
+router.post("/selfie-check", submitSelfie);
+router.get("/selfie-check/status", getSelfieStatus);
 
 export default router;

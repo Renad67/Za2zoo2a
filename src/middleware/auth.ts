@@ -49,3 +49,18 @@ export const restrictTo =
 export const authenticate = protect;
 export const requireRole = (...roles: Array<"rider" | "driver">) =>
   restrictTo(...(roles as UserRole[]));
+
+/**
+ * Combined middleware: authenticate + enforce admin role.
+ * Use on all /api/admin/* routes.
+ */
+export const requireAdmin = [
+  protect,
+  (req: AuthRequest, res: Response, next: NextFunction): void => {
+    if (req.user?.role !== UserRole.ADMIN) {
+      res.status(403).json({ success: false, message: "Admin access only" });
+      return;
+    }
+    next();
+  },
+];
