@@ -3,8 +3,8 @@ import mongoose, { Document, Schema } from "mongoose";
 export interface ISelfieCheck extends Document {
   _id: mongoose.Types.ObjectId;
   driver: mongoose.Types.ObjectId;  // ref to User (driver)
-  photoUrl: string;                 // Cloudinary URL
-  status: "pending_review" | "approved" | "rejected";
+  photoUrl?: string;                // Cloudinary URL (optional for requested checks)
+  status: "requested" | "pending_review" | "approved" | "rejected";
   reviewedBy?: mongoose.Types.ObjectId; // admin who reviewed
   reviewedAt?: Date;
   rejectionReason?: string;
@@ -15,10 +15,10 @@ export interface ISelfieCheck extends Document {
 const SelfieCheckSchema = new Schema<ISelfieCheck>(
   {
     driver: { type: Schema.Types.ObjectId, ref: "User", required: true },
-    photoUrl: { type: String, required: true },
+    photoUrl: { type: String }, // optional when requested by admin
     status: {
       type: String,
-      enum: ["pending_review", "approved", "rejected"],
+      enum: ["requested", "pending_review", "approved", "rejected"],
       default: "pending_review",
     },
     reviewedBy: { type: Schema.Types.ObjectId, ref: "User" },

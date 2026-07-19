@@ -89,7 +89,7 @@ router.post(
 );
 
 // ── Selfie Check ──────────────────────────────────────────────────────
-router.post("/selfie-check", submitSelfie);
+router.post("/selfie-check", uploadPhoto.single("photo"), submitSelfie);
 router.get("/selfie-check/status", getSelfieStatus);
 
 export default router;

@@ -3,6 +3,8 @@ import { AuthRequest, DriverDocumentStatus } from "../types";
 import { Driver } from "../models/Driver";
 import { User } from "../models/User";
 import { SelfieCheck } from "../models/SelfieCheck";
+import { createNotification } from "../services/notificationService";
+import { NotificationType } from "../types";
 import { ApiError } from "../utils/apiError";
 import { sendSuccess } from "../utils/apiResponse";
 
@@ -299,6 +301,43 @@ export const reviewSelfieCheck = async (
     if (!selfie) throw new ApiError("Selfie check not found", 404);
 
     sendSuccess(res, { selfie }, `Selfie ${status}`);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+//  POST /api/admin/selfie-checks/request
+//  Admin forces a required selfie check for a specific driver.
+//  Body: { driverId: string }
+// ─────────────────────────────────────────────────────────────────
+export const requestSelfieCheck = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const { driverId } = req.body;
+    if (!driverId) throw new ApiError("driverId is required", 400);
+
+    const driverUser = await User.findOne({ _id: driverId, role: "driver" });
+    if (!driverUser) throw new ApiError("Driver not found", 404);
+
+    // Create a requested selfie check (without photoUrl initially)
+    await SelfieCheck.create({
+      driver: driverId,
+      status: "requested",
+    });
+
+    // Notify the driver
+    await createNotification(
+      driverId,
+      "Selfie Verification Required",
+      "An admin has requested you to upload a new selfie to verify your identity.",
+      NotificationType.SYSTEM,
+    );
+
+    sendSuccess(res, null, "Selfie check requested successfully");
   } catch (error) {
     next(error);
   }

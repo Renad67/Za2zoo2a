@@ -13,7 +13,17 @@ import {
   blockDriver,
   listSelfieChecks,
   reviewSelfieCheck,
+  requestSelfieCheck,
 } from "../controllers/adminDriverController";
+import {
+  sendNotification,
+  getNotificationHistory,
+} from "../controllers/adminNotificationController";
+import {
+  listRiders,
+  getRiderDetail,
+  blockRider as blockRiderHandler,
+} from "../controllers/adminRiderController";
 
 const router = Router();
 
@@ -34,8 +44,18 @@ router.patch("/drivers/:id/documents/:docType/review", requireAdmin, reviewDocum
 router.patch("/drivers/:id/approve", requireAdmin, approveDriver);
 router.patch("/drivers/:id/block", requireAdmin, blockDriver);
 
+// ── Rider Management ──────────────────────────────────────────────
+router.get("/riders", requireAdmin, listRiders);
+router.get("/riders/:id", requireAdmin, getRiderDetail);
+router.patch("/riders/:id/block", requireAdmin, blockRiderHandler);
+
 // ── Selfie Checks ─────────────────────────────────────────────────
 router.get("/selfie-checks", requireAdmin, listSelfieChecks);
 router.patch("/selfie-checks/:id/review", requireAdmin, reviewSelfieCheck);
+router.post("/selfie-checks/request", requireAdmin, requestSelfieCheck);
+
+// ── Notifications ─────────────────────────────────────────────────
+router.post("/notifications", requireAdmin, sendNotification);
+router.get("/notifications", requireAdmin, getNotificationHistory);
 
 export default router;
