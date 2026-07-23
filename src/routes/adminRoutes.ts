@@ -14,6 +14,7 @@ import {
   listSelfieChecks,
   reviewSelfieCheck,
   requestSelfieCheck,
+  listCars,
 } from "../controllers/adminDriverController";
 import {
   sendNotification,
@@ -24,6 +25,7 @@ import {
   getRiderDetail,
   blockRider as blockRiderHandler,
 } from "../controllers/adminRiderController";
+import { listTrips, getTripDetail } from "../controllers/adminTripController";
 
 const router = Router();
 
@@ -57,5 +59,12 @@ router.post("/selfie-checks/request", requireAdmin, requestSelfieCheck);
 // ── Notifications ─────────────────────────────────────────────────
 router.post("/notifications", requireAdmin, sendNotification);
 router.get("/notifications", requireAdmin, getNotificationHistory);
+
+// ── Cars / Vehicles ───────────────────────────────────────────────
+router.get("/cars", requireAdmin, listCars);
+
+// ── Trips ─────────────────────────────────────────────────────────
+router.get("/trips", requireAdmin, listTrips);
+router.get("/trips/:id", requireAdmin, getTripDetail);
 
 export default router;

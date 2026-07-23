@@ -342,3 +342,44 @@ export const requestSelfieCheck = async (
     next(error);
   }
 };
+
+// ─────────────────────────────────────────────────────────────────
+//  GET /api/admin/cars
+//  List all registered cars/vehicles and their drivers.
+//  Query: ?page=1&limit=20
+// ─────────────────────────────────────────────────────────────────
+export const listCars = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const skip = (page - 1) * limit;
+
+    const [drivers, total] = await Promise.all([
+      Driver.find()
+        .select("vehicle documents.carLicense user")
+        .populate("user", "fullName email phone")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      Driver.countDocuments(),
+    ]);
+
+    const cars = drivers.map((driver) => ({
+      _id: driver._id,
+      driver: driver.user,
+      vehicle: driver.vehicle,
+      carLicenseStatus: driver.documents?.carLicense?.status,
+    }));
+
+    sendSuccess(res, {
+      cars,
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
